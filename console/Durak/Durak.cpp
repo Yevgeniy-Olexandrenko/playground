@@ -6,7 +6,6 @@
 #include <windows.h>
 #include <string>
 #include <sstream>
-#include <iomanip>
 #include <set>
 
 enum Suit { SUIT_NONE = -1, SUIT_HEARTS = 0, SUIT_DIAMONDS, SUIT_CLUBS, SUIT_SPADES };
@@ -18,19 +17,19 @@ struct Card
     Suit suit = SUIT_NONE;
 
     operator bool() const { return (rank != RANK_NONE && suit != SUIT_NONE); }
-    bool operator== (const Card& other) const { return (rank == other.rank && suit == other.suit); }
     bool operator<  (const Card& other) const { return (rank == other.rank ? suit < other.suit : rank < other.rank); }
 
     void print() const
     {
+        const char* ranks[] = { "6", "7", "8", "9", "T", "J", "Q", "K", "A" };
         const char* suits[] = { "\u2665", "\u2666", "\u2663", "\u2660" }; // ♥ ♦ ♣ ♠
-        const char* ranks[] = { "6", "7", "8", "9", "10", "J", "Q", "K", "A" };
         std::cout << ranks[rank - RANK_SIX] << suits[suit];
     }
+    void println() const { print(); std::cout << '\n'; }
 };
 
 using Cards = std::vector<Card>;
-static const Card NothingCard;
+static const Card InvalidCard;
 
 class Hand
 {
@@ -56,16 +55,15 @@ public:
             std::advance(it, i);
             return *it;
         }
-        return NothingCard;
+        return InvalidCard;
     }
 
     void print() const
     {
         for (const auto& card : m_cards)
         {
-            std::cout << std::setw(2); card.print(); std::cout << ' ';
+            card.print(); std::cout << ' ';
         }
-        std::cout << "\n";
     }
 
 private:
@@ -77,28 +75,49 @@ class Deck
 public:
     Deck()
     {
-        for (int i = 0; i < 36; ++i)
-            m_cards.push_back({ Rank(RANK_SIX + i / 4), Suit(i % 4) });
-        std::random_device rd;
-        std::mt19937 g(rd());
-        std::shuffle(m_cards.begin(), m_cards.end(), g);
+        create();
+        shuffle();
         m_trump = m_cards.front();
     }
 
-    const Card& trump() const { return m_trump; }
     bool empty() const { return m_cards.empty(); }
-    Card take()
+    const Card& trump() const { return m_trump; }
+    
+    const Card take()
     {
-        if (empty()) return NothingCard;
-        Card card = m_cards.back();
+        if (empty()) return InvalidCard;
+        const Card card = m_cards.back();
         m_cards.pop_back();
         return card;
+    }
+
+    void refill(Hand& hand)
+    {
+        while (hand.size() < 6 && !empty()) hand.give(take());
     }
 
     void print() const
     {
         m_trump.print();
         std::cout << ' ' << m_cards.size() << '\n';
+    }
+
+private:
+    void create()
+    {
+        m_cards.resize(36);
+        for (size_t i = 0; i < 36; ++i)
+        {
+            m_cards[i].rank = Rank(RANK_SIX + i / 4);
+            m_cards[i].suit = Suit(i % 4);
+        }
+    }
+
+    void shuffle()
+    {
+        std::random_device rd;
+        std::mt19937 g(rd());
+        std::shuffle(m_cards.begin(), m_cards.end(), g);
     }
 
 private:
@@ -113,8 +132,8 @@ public:
     size_t size() const { return m_cards.size(); }
 
     void place(const Card& card) { if (card) m_cards.push_back(card); }
-    const Card& card(size_t i) const { return i < size() ? m_cards[i] : NothingCard; }
-    const Card& last() const { return m_cards.empty() ? NothingCard : m_cards.back(); }
+    const Card& card(size_t i) const { return i < size() ? m_cards[i] : InvalidCard; }
+    const Card& last() const { return m_cards.empty() ? InvalidCard : m_cards.back(); }
     Deck& deck() { return m_deck; }
 
     void give(Hand& hand)
@@ -129,11 +148,11 @@ public:
         m_cards.clear();
     }
 
-    void print() const
+    void println() const
     {
         for (size_t i = 0; i < m_cards.size(); ++i)
         {
-            std::cout << std::setw(2);
+            std::cout << std::string(5, ' ');
             m_cards[i++].print();
             if (i < m_cards.size())
             {
@@ -150,145 +169,22 @@ private:
     Deck  m_deck;
 };
 
-// Класс для представления игрока
-class Player {
+class Player
+{
 public:
-    Player(const std::string& name, bool isAI)
-        : name(name), isAI(isAI) {}
+    Player(const std::string& name) : m_name(name) {}
 
-    void addCard(const Card& card) 
-    {
-        m_hand.give(card);
-    }
+    const std::string& name() const { return m_name; }
+    Hand& hand() { return m_hand; }
 
-    void showHandForInspect() const 
-    {
-        std::cout << name << ": ";
-        m_hand.print();
-    }
+    virtual const Card attack(Table& table, Player& defender) = 0;
+    virtual const Card defense(Table& table, Player& attacker) = 0;
+    virtual const Card throwin(Table& table, Player& defender) = 0;
 
-    void showHandForChoose(const std::vector<bool>& highlight) const 
-    {
-        showHandForInspect();
-        std::cout << name << ": ";
-        for (size_t i = 0; i < highlight.size(); ++i)
-        {
-            std::cout << std::setw(2);
-            std::cout << '^' << char(highlight[i] ? ('1' + i) : '.') << ' ';
-        }
-        std::cout << '\n';
-    }
+    void print()   const { std::cout << m_name << ": "; m_hand.print(); }
+    void println() const { print(); std::cout << '\n'; }
 
-    std::string getName() const { return name; }
-    bool hasCards() const { return !m_hand.empty(); }
-    Hand& getHand() { return m_hand; }
-
-    Card attack(const Card& trumpCard) 
-    {
-        if (m_hand.empty())
-            return Card();
-
-        if (isAI) 
-        {
-            Card card = aiChooseAttackCard(trumpCard);
-            m_hand.take(card);
-            return card;
-        }
-
-        // Для человеческого игрока
-        std::vector<bool> highlight(m_hand.size(), true);
-        showHandForChoose(highlight);
-
-        int cardIndex = -1;
-        while (cardIndex < 1 || cardIndex > m_hand.size()) {
-            std::cout << "Выберите карту для атаки (1 - " << m_hand.size() << "): ";
-            std::cin >> cardIndex;
-        }
-
-        Card card = m_hand.take(cardIndex - 1);
-        return card;
-    }
-
-    Card defense(const Card& attackCard, const Card& trumpCard) {
-        if (isAI)
-        {
-            Card card = aiChooseDefenseCard(attackCard, trumpCard);
-            m_hand.take(card);
-            return card;
-        }
-
-        // Для человеческого игрока
-        std::vector<bool> highlight(m_hand.size(), false);
-        for (size_t i = 0; i < m_hand.size(); ++i)
-        {
-            if (isValidDefense(attackCard, m_hand.card(i), trumpCard))
-            {
-                highlight[i] = true;
-            }
-        }
-        showHandForChoose(highlight);
-
-        int cardIndex = -1;
-        while (cardIndex < 0 || cardIndex > m_hand.size()) {
-            std::cout << "Выберите карту для защиты (1 - " << m_hand.size() << ", 0 - взять карты): ";
-            std::cin >> cardIndex;
-
-            if (cardIndex == 0) return Card();
-            if (highlight[cardIndex - 1]) break;
-
-            std::cout << "Эту карту нельзя выбрать, попробуй еще раз!\n";
-            cardIndex = -1;
-        }
-
-        Card card = m_hand.take(cardIndex - 1);
-        return card;
-    }
-
-    Card additionalAttack(const Table& table, size_t defenderHandSize, const Card& trumpCard) {
-        if (m_hand.empty() || !hasValidAttacks(table))
-            return NothingCard;
-
-        if (isAI) 
-        {
-            Card card = aiChooseAdditionalAttackCard(table, defenderHandSize, trumpCard);
-            m_hand.take(card);
-            return card;
-        }
-
-        // Для человеческого игрока
-        std::cout << name << " может подкинуть карты:\n";
-
-        std::vector<bool> highlight(m_hand.size(), false);
-        for (size_t i = 0; i < m_hand.size(); ++i)
-        {
-            if (isValidAttack(table, m_hand.card(i)))
-            {
-                highlight[i] = true;
-            }
-        }
-        showHandForChoose(highlight);
-
-        int cardIndex = -1;
-        while (cardIndex < 0 || cardIndex > m_hand.size()) {
-            std::cout << "Выберите карту для подкидывания (1 - " << m_hand.size() << ", 0 - пропустить): ";
-            std::cin >> cardIndex;
-
-            if (cardIndex == 0) return Card();
-            if (highlight[cardIndex - 1]) break;
-
-            std::cout << "Эту карту нельзя выбрать, попробуй еще раз!\n";
-            cardIndex = -1;
-        }
-
-        Card card = m_hand.take(cardIndex - 1);
-        return card;
-    }
-
-private:
-    bool isAI;
-    std::string name;
-    Hand m_hand;
-
+protected:
     bool isValidAttack(const Table& table, const Card& card) const
     {
         for (size_t i = 0; i < table.size(); ++i)
@@ -305,6 +201,189 @@ private:
         return false;
     }
 
+    bool isThrowinAllowed(const Table& table, Player& defender) const
+    {
+        size_t attacks = table.size() / 2;
+        if (attacks < 6 && !defender.hand().empty())
+        {
+            for (size_t i = 0; i < m_hand.size(); ++i)
+            {
+                if (isValidAttack(table, m_hand.card(i))) return true;
+            }
+        }
+        return false;
+    }
+
+protected:
+    std::string m_name;
+    Hand m_hand;
+};
+
+class HumanPlayer : public Player
+{
+public:
+    using Highlight = std::vector<bool>;
+    HumanPlayer(const std::string& name) : Player(name) {}
+
+    const Card attack(Table& table, Player& defender) override
+    {
+        Highlight hl(m_hand.size(), true);
+        print(hl);
+        int index = chooseCardIndex(hl, "Выберите карту для атаки", "");
+        std::cout << '\n';
+
+        Card card = m_hand.take(index - 1);
+        return card;
+    }
+
+    const Card defense(Table& table, Player& attacker) override
+    {
+        const Card& attack = table.last();
+        const Card& trump  = table.deck().trump();
+
+        std::cout << '\n';
+        Highlight hl(m_hand.size(), false);
+        for (size_t i = 0; i < m_hand.size(); ++i)
+        {
+            if (isValidDefense(attack, m_hand.card(i), trump)) hl[i] = true;
+        }
+        print(hl);
+        int index = chooseCardIndex(hl, "Выберите карту для защиты", "взять карты");
+        std::cout << '\n';
+        
+        Card card = m_hand.take(index - 1);
+        return card;
+    }
+
+    const Card throwin(Table& table, Player& defender) override
+    {
+        if (isThrowinAllowed(table, defender))
+        {
+            std::cout << '\n';
+            Highlight hl(m_hand.size(), false);
+            for (size_t i = 0; i < m_hand.size(); ++i)
+            {
+                if (isValidAttack(table, m_hand.card(i))) hl[i] = true;
+            }
+            print(hl);
+            int index = chooseCardIndex(hl, "Выберите карту для подкидывания", "пропустить");
+            std::cout << '\n';
+            
+            Card card = m_hand.take(index - 1);
+            return card;
+        }
+        return InvalidCard;
+    }
+
+private:
+    int chooseCardIndex(const Highlight& hl, const std::string& msg, const std::string& act)
+    {
+        int index = -1, max = hl.size();
+        while (index < 0 || index > max)
+        {
+            std::cout << msg << " (1 - " << max;
+            if (!act.empty()) std::cout << ", 0 - " << act;
+            std::cout << "): ";
+
+            std::cin >> index;
+            if (index == 0 && !act.empty()) break;
+            if (index <= max && index > 0 && hl[index - 1]) break;
+
+            std::cout << "Эту карту нельзя выбрать, попробуй еще раз!\n";
+            index = -1;
+        }
+        return index;
+    }
+
+    void print(const Highlight& highlight) const
+    {
+        Player::println();
+        std::cout << m_name << ": ";
+        for (size_t i = 0; i < highlight.size(); ++i)
+        {
+            std::cout << '^' << char(highlight[i] ? ('1' + i) : '.') << ' ';
+        }
+        std::cout << '\n';
+    }
+};
+
+class AIPlayer : public Player
+{
+public:
+    AIPlayer(const std::string& name) : Player(name) {}
+
+    const Card attack(Table& table, Player& defender) override
+    {
+        const Card card = chooseAttackCard(table, defender);
+        m_hand.take(card);
+        return card;
+    }
+
+    const Card defense(Table& table, Player& attacker) override
+    {
+        const Card card = chooseDefenseCard(table, attacker);
+        m_hand.take(card);
+        return card;
+    }
+
+    const Card throwin(Table& table, Player& defender) override
+    {
+        if (isThrowinAllowed(table, defender))
+        {
+            const Card card = chooseThrowinCard(table, defender);
+            m_hand.take(card);
+            return card;
+        }
+        return InvalidCard;
+    }
+
+protected:
+    virtual const Card chooseAttackCard(Table& table, Player& defender)
+    {
+        std::vector<Card> possibleAttacks;
+        for (size_t i = 0; i < m_hand.size(); ++i)
+        {
+            possibleAttacks.push_back(m_hand.card(i));
+        }
+
+        const Card& trump = table.deck().trump();
+        return chooseLowestWeightCard(possibleAttacks, trump);
+    }
+
+    virtual const Card chooseDefenseCard(Table& table, Player& attacker)
+    {
+        const Card& attack = table.last();
+        const Card& trump  = table.deck().trump();
+
+        std::vector<Card> possibleDefenses;
+        for (size_t i = 0; i < m_hand.size(); ++i)
+        {
+            const Card& hand = m_hand.card(i);
+            if (isValidDefense(attack, hand, trump))
+            {
+                possibleDefenses.push_back(hand);
+            }
+        }
+        return (possibleDefenses.empty() ? InvalidCard : chooseLowestWeightCard(possibleDefenses, trump));
+    }
+
+    virtual const Card chooseThrowinCard(Table& table, Player& defender)
+    {
+        std::vector<Card> possibleAttacks;
+        for (size_t i = 0; i < m_hand.size(); ++i)
+        {
+            const Card& hand = m_hand.card(i);
+            if (isValidAttack(table, hand))
+            {
+                possibleAttacks.push_back(hand);
+            }
+        }
+
+        const Card& trump = table.deck().trump();
+        return (possibleAttacks.empty() ? InvalidCard : chooseLowestWeightCard(possibleAttacks, trump));
+    }
+
+private:
     const Card chooseLowestWeightCard(const Cards& validCards, const Card& trumpCard)
     {
         auto compare = [&trumpCard](const Card& a, const Card& b) -> bool
@@ -315,65 +394,13 @@ private:
         };
         return *std::min_element(validCards.begin(), validCards.end(), compare);
     }
-
-    const Card aiChooseAttackCard(const Card& trumpCard) 
-    {
-        std::vector<Card> possibleAttacks;
-        for (size_t i = 0; i < m_hand.size(); ++i)
-        {
-            possibleAttacks.push_back(m_hand.card(i));
-        }
-        return chooseLowestWeightCard(possibleAttacks, trumpCard);
-    }
-
-    const Card aiChooseDefenseCard(const Card& attackCard, const Card& trumpCard) 
-    {
-        std::vector<Card> possibleDefenses;
-        for (size_t i = 0; i < m_hand.size(); ++i)
-        {
-            const Card& handCard = m_hand.card(i);
-            if (isValidDefense(attackCard, handCard, trumpCard))
-            {
-                possibleDefenses.push_back(handCard);
-            }
-        }
-        return (possibleDefenses.empty() ? NothingCard : chooseLowestWeightCard(possibleDefenses, trumpCard));
-    }
-
-    Card aiChooseAdditionalAttackCard(const Table& table, size_t defenderHandSize, const Card& trumpCard) 
-    {
-        if (defenderHandSize == 0)
-            return NothingCard;
-
-        std::vector<Card> possibleAttacks;
-        for (size_t i = 0; i < m_hand.size(); ++i)
-        {
-            const Card& handCard = m_hand.card(i);
-            if (isValidAttack(table, handCard))
-            {
-                possibleAttacks.push_back(handCard);
-            }
-        }
-        return (possibleAttacks.empty() ? NothingCard : chooseLowestWeightCard(possibleAttacks, trumpCard));
-    }
-
-    bool hasValidAttacks(const Table& table) const 
-    {
-        for (size_t i = 0; i < m_hand.size(); ++i)
-        {
-            if (isValidAttack(table, m_hand.card(i))) return true;
-        }
-        return false;
-    }
 };
 
-// Класс для представления игры
 class Game 
 {
 public:
     Game(bool useAIasHuman)
     {
-        // Задаем число игроков
         int numPlayers = 0;
         while (numPlayers < 2 || numPlayers > 4)
         {
@@ -381,21 +408,19 @@ public:
             std::cin >> numPlayers;
         }
 
-        // Создаем игроков
-        m_players.push_back(Player("YOU", useAIasHuman));
+        if (useAIasHuman)
+            m_players.push_back(std::make_shared<AIPlayer>("Hum"));
+        else
+            m_players.push_back(std::make_shared<HumanPlayer>("Hum"));
         for (int i = 1; i < numPlayers; ++i)
-        {
-            m_players.push_back(Player("AI" + std::to_string(i), true));
-        }
+            m_players.push_back(std::make_shared<AIPlayer>("Ai" + std::to_string(i)));
 
-        // Раздача карт игрокам
         for (int i = 0; i < 6; ++i)
             for (auto& player : m_players)
-                player.addCard(m_table.deck().take());
+                player->hand().give(m_table.deck().take());
 
-        // Определение первого атакующего игрока
         m_attackerIndex = findFirstAttacker(m_table.deck().trump());
-        std::cout << "Первым ходит игрок: " << m_players[m_attackerIndex].getName() << "\n";
+        std::cout << "Первым ходит игрок: " << m_players[m_attackerIndex]->name() << '\n';
     }
 
     void loop()
@@ -405,95 +430,72 @@ public:
             if (m_players.size() <= 1)
                 break;
 
-            printNewRoundBegin();
-
             // TODO: something wrong with index after players deletion
-            int defenderIndex = (m_attackerIndex + 1) % m_players.size();
-            Player& attacker = m_players[m_attackerIndex];
-            Player& defender = m_players[defenderIndex];
-
-            // Атака
-            Card attackCard = attacker.attack(m_table.deck().trump());
-            if (attackCard)
-            {
-                std::cout << attacker.getName() << " атакует " << defender.getName();
-                std::cout << " картой: ";
-                attackCard.print();
-                std::cout << "\n";
-                attacker.showHandForInspect();
-            }
-            else
-            {
-                std::cout << attacker.getName() << " пропускает ход.\n";
-                m_attackerIndex = (m_attackerIndex + 1) % m_players.size();
-                continue;
-            }
-
+            size_t defenderIndex = (m_attackerIndex + 1) % m_players.size();
+            Player& attacker = *m_players[m_attackerIndex];
+            Player& defender = *m_players[defenderIndex];
+            printNewRoundBegin(attacker, defender);
+            
+            Card attackCard = attacker.attack(m_table, defender);
             m_table.place(attackCard);
-            std::cout << "Карты на столе:\n";
-            m_table.print();
+
+            attacker.print();
+            std::cout << "-> ";
+            attackCard.println();
+            m_table.println();
 
             bool defenderTookCards = false;
             while (true)
             {
-                // Защитник пытается отбиться от последней подкинутой карты
-                Card defendCard = defender.defense(m_table.last(), m_table.deck().trump());
+                Card defendCard = defender.defense(m_table, attacker);
                 if (defendCard)
                 {
-                    std::cout << defender.getName() << " отбивается картой: ";
-                    defendCard.print();
-                    std::cout << "\n";
-                    defender.showHandForInspect();
-
                     m_table.place(defendCard);
-                    std::cout << "Карты на столе:\n";
-                    m_table.print();
+
+                    defender.print();
+                    std::cout << "-> ";
+                    defendCard.println();
+                    m_table.println();
                 }
                 else
                 {
-                    std::cout << defender.getName() << " не может отбиться, забирает карты.\n";
+                    m_table.give(defender.hand());
+                    std::cout << defender.name() << ": не может отбиться, забирает карты.\n";
 
                     defenderTookCards = true;
-                    m_table.give(defender.getHand());
                     break;
                 }
 
-                // Проверяем, можно ли подкидывать еще карты
-                if (!defender.hasCards()) break;
-
-                // Подкидывание карт
-                bool someoneAddedCard = false;
+                bool someoneThrewCard = false;
                 for (size_t i = 0; i < m_players.size(); ++i)
                 {
                     size_t attackerIndex = (m_attackerIndex + i) % m_players.size();
                     if (attackerIndex == defenderIndex) continue;
-                    Player& attacker = m_players[attackerIndex];
+                    Player& attacker = *m_players[attackerIndex];
 
-                    Card additionalCard = attacker.additionalAttack(m_table, defender.getHand().size(), m_table.deck().trump());
-                    if (additionalCard)
+                    Card throwinCard = attacker.throwin(m_table, defender);
+                    if (throwinCard)
                     {
-                        std::cout << "\n";
-                        std::cout << attacker.getName() << " подкидывает карту: ";
-                        additionalCard.print();
-                        std::cout << "\n";
-                        attacker.showHandForInspect();
+                        m_table.place(throwinCard);
 
-                        m_table.place(additionalCard);
-                        std::cout << "Карты на столе:\n";
-                        m_table.print();
+                        attacker.print();
+                        std::cout << "-> ";
+                        throwinCard.println();
+                        m_table.println();
 
-                        someoneAddedCard = true;
-                        break; // Подкидываем по одной карте
+                        someoneThrewCard = true;
+                        break;
                     }
                 }
-                if (!someoneAddedCard) break;
+                if (!someoneThrewCard) break;
             }
-
             if (!defenderTookCards)
             {
-                std::cout << defender.getName() << " успешно отбился, карты идут в отбой.\n";
                 m_table.discard();
+                std::cout << defender.name() << ": успешно отбился, карты идут в отбой.\n";
             }
+
+            /////////////////////////////////////////////////////////////////////
 
             // Добор карт из колоды
             refillHands();
@@ -514,25 +516,19 @@ public:
     }
 
 private:
-    void printNewRoundBegin()
+    void printNewRoundBegin(const Player& attacker, const Player& defender)
     {
-        std::cout << '\n';
-        std::cout << std::string(10, '-');
+        std::cout << '\n' << std::string(5, '~');
         std::cout << " ROUND: " << ++m_roundNumber << ' ';
-        std::cout << std::string(10, '-');
-        std::cout << '\n';
+        std::cout << attacker.name() << " -> " << defender.name() << ' ';
+        std::cout << std::string(5, '~') << '\n';
 
-        // Вывод состояния колоды
         std::cout << "\n";
         std::cout << "Колода: ";
         m_table.deck().print();
 
-        // Вывод карт игроков перед ходом
-        std::cout << "Карты игроков перед ходом:\n";
-        for (const auto& player : m_players)
-        {
-            player.showHandForInspect();
-        }
+        std::cout << "Карты игроков:\n";
+        for (const auto& player : m_players) player->println();
         std::cout << "\n";
     }
 
@@ -543,7 +539,7 @@ private:
         Card lowestTrump{ RANK_ACE, trumpCard.suit };
         for (size_t i = 0; i < m_players.size(); ++i) 
         {
-            const Hand& hand = m_players[i].getHand();
+            const Hand& hand = m_players[i]->hand();
             for (size_t c = 0; c < hand.size(); ++c)
             {
                 const Card& card = hand.card(c);
@@ -582,19 +578,16 @@ private:
 
         for (size_t idx : refillOrder)
         {
-            Player& player = m_players[idx];
-            while (player.getHand().size() < 6 && !m_table.deck().empty())
-            {
-                player.addCard(m_table.deck().take());
-            }
+            Player& player = *m_players[idx];
+            m_table.deck().refill(player.hand());
         }
     }
 
     void removePlayersWithoutCards() {
         m_players.erase(remove_if(m_players.begin(), m_players.end(),
-            [](const Player& player)
+            [](std::shared_ptr<Player>& player)
             {
-                return !player.hasCards();
+                return player->hand().empty();
             }
         ), m_players.end());
     }
@@ -607,14 +600,14 @@ private:
         }
         else
         {
-            std::cout << m_players[0].getName() << " проиграл и остается дураком!\n";
-            m_players[0].showHandForInspect();
+            std::cout << m_players[0]->name() << ": проиграл и остается дураком!\n";
+            m_players[0]->print();
         }
     }
 
 private:
     Table m_table;
-    std::vector<Player> m_players;
+    std::vector<std::shared_ptr<Player>> m_players;
     int m_attackerIndex = 0;
     int m_roundNumber = 0;
 };
@@ -622,7 +615,7 @@ private:
 int main() 
 {
     SetConsoleOutputCP(CP_UTF8);
-    Game game(!true);
+    Game game(true);
     game.loop();
     return 0;
 }
